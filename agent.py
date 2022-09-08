@@ -31,6 +31,7 @@ class PlayerInfo:
     deaths: int
     assists: int
     credits: int
+    spike_status: bool
     agent_name: str
     team: str
     health: int

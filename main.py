@@ -11,6 +11,7 @@ from agent import PlayerInfo, AgentPictureInfo
 # CLI Arguments
 parser = argparse.ArgumentParser(description="Process a Valorant image")
 parser.add_argument("--icons", help="Path for agent icons.", type=str, required=True)
+parser.add_argument("--symbols", help="Path for symbolic icons.", type=str, required=True)
 parser.add_argument(
     "--image_path", help="Path for image to process.", type=str, required=True
 )
@@ -42,6 +43,9 @@ KILLS_X_BOUNDS = np.array([934, 973])
 DEATHS_X_BOUNDS = np.array([973, 1012])
 ASSISTS_X_BOUNDS = np.array([1012, 1051])
 CREDITS_X_BOUNDS = np.array([1205, 1287])
+
+SYMBOL_IMAGE_SIZE = np.array([40, 34])
+SYMBOL_CONF_THRESHOLD = 0.8
 
 
 DEBUG_TEXT_OPTIONS = {
@@ -120,6 +124,12 @@ def show_debug_image(
         )
         im = outlined_text(
             im,
+            f"Spike: {player_info.spike_status}",
+            scoreboard_picture.image_rect[0] + scoreboard_y_text_offset * 3,
+            color=color,
+        )
+        im = outlined_text(
+            im,
             f"ultimate: {str(player_info.ultimate_status)}",
             scoreboard_picture.image_rect[0]
             + scoreboard_y_text_offset
@@ -178,7 +188,7 @@ def top_hud_detectors(
     return image_agent_infos, agent_healths
 
 
-def scoreboard_detectors(im, blue_icons):
+def scoreboard_detectors(im, blue_icons, spike_icon):
     agent_pictures = detectors.detect_all_agents(
         im,
         blue_icons,
@@ -194,6 +204,8 @@ def scoreboard_detectors(im, blue_icons):
     return agent_pictures, detectors.detect_scoreboard(
         im,
         agent_pictures,
+        spike_icon,
+        SYMBOL_CONF_THRESHOLD,
         SCOREBOARD_ENTRY_HEIGHT,
         USERNAME_X_BOUNDS,
         ULTIMATE_X_BOUNDS,
@@ -205,13 +217,14 @@ def scoreboard_detectors(im, blue_icons):
 
 import time
 
-def main(image_path, icon_directory):
+def main(image_path, icon_directory, symbol_directory):
     im = cv2.imread(image_path)
 
     # cv2.imshow("image", im)
     # cv2.waitKey(0)
     blue_icons, red_icons = loader.load_blue_red_icons(icon_directory, AGENT_IMAGE_SIZE)
     scoreboard_icons = loader.load_icons(icon_directory, SCOREBOARD_AGENT_IMAGE_SIZE)
+    symbol_icons = loader.load_icons(symbol_directory, SYMBOL_IMAGE_SIZE)
     top_hud = im[:TOP_HUD_HEIGHT, :, :]
 
     
@@ -226,7 +239,8 @@ def main(image_path, icon_directory):
         deaths,
         assists,
         credits,
-    ) = scoreboard_detectors(im, scoreboard_icons)
+        spike_status,
+    ) = scoreboard_detectors(im, scoreboard_icons, symbol_icons["Spike"])
 
     matched_pictures = dict()
     # Match agents from top hud to scoreboard
@@ -253,6 +267,7 @@ def main(image_path, icon_directory):
                 deaths[i],
                 assists[i],
                 credits[i],
+                spike_status[i],
                 0, # health is unknown so they're probably dead
             )
             continue
@@ -264,13 +279,14 @@ def main(image_path, icon_directory):
             deaths[i],
             assists[i],
             credits[i],
+            spike_status[i],
             agent_healths.pop(match_index),
         )
 
     agent_infos = []
     for (
         (agent_picture_top_hud, scoreboard_agent_picture),
-        (username, ultimate_status, kill, death, assist, credit, health),
+        (username, ultimate_status, kill, death, assist, credit, spike_status, health),
     ) in matched_pictures.items():
         agent_infos.append(
             PlayerInfo(
@@ -280,18 +296,20 @@ def main(image_path, icon_directory):
                 death,
                 assist,
                 credit,
+                spike_status,
                 scoreboard_agent_picture.agent_name,
                 scoreboard_agent_picture.team,
                 health,
             )
         )
     end_time = time.time()
-    print(end_time - start_time)
+    print(f"time: {end_time - start_time} sec")
     print(agent_infos)
     show_debug_image(im, matched_pictures.keys(), agent_infos)
 
 
 if __name__ == "__main__":
     image_path = args.image_path
+    symbols_directory = args.symbols
     icon_directory = args.icons
-    main(image_path=image_path, icon_directory=icon_directory)
+    main(image_path=image_path, icon_directory=icon_directory, symbol_directory=symbols_directory)

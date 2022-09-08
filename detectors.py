@@ -6,14 +6,6 @@ from PIL import Image
 import re
 
 
-def classify_agent(im, icons):
-    agents = dict()
-    for agent_name, (icon, mask) in icons.items():
-        result = cv2.matchTemplate(im, icon, cv2.TM_CCOEFF_NORMED, mask=mask)
-        agents[agent_name] = result.flatten()
-    return agents
-
-
 def detect_all_agents(
     im,
     blue_icons,
@@ -48,6 +40,14 @@ def detect_all_agents(
         "red",
         DEBUG=(0, 0, 255) if DEBUG else None,
     )
+    return agents
+
+
+def classify_agent(im, icons):
+    agents = dict()
+    for agent_name, (icon, mask) in icons.items():
+        result = cv2.matchTemplate(im, icon, cv2.TM_CCOEFF_NORMED, mask=cv2.multiply(mask, 255))
+        agents[agent_name] = result.flatten()
     return agents
 
 
@@ -175,10 +175,12 @@ def detect_health_bar(
             agent_healths.append(0)
     return agent_healths
 
+
 def dollar_contour_score(cnt):
     x, y, w, h = cv2.boundingRect(cnt)
     area = cv2.contourArea(cnt)
-    return area - x ** 2
+    return area - x**2
+
 
 def read_string(tesseract, im, x_bounds, y_coord, height, filter_dollar=False) -> str:
     cutout = im[y_coord : y_coord + height, x_bounds[0] : x_bounds[1], :]
@@ -186,6 +188,7 @@ def read_string(tesseract, im, x_bounds, y_coord, height, filter_dollar=False) -
     cutout = cutout[:, :, 0] * cutout[:, :, 1] * cutout[:, :, 2]
     cutout /= np.max(cutout)
     cutout = (cutout * 255.0).astype(np.uint8)
+    cutout = cv2.GaussianBlur(cutout, (0,0), 0.5)
     if filter_dollar:
         # Filter out the valorant dollar sign so it's not read by tesseract
         edges = cv2.Canny(cutout, 100, 200)
@@ -211,25 +214,34 @@ def read_string(tesseract, im, x_bounds, y_coord, height, filter_dollar=False) -
     cutout = 255 - cutout
     # cv2.imshow("cutout", cutout)
     # cv2.waitKey(0)
-    # cv2.destroyWindow("cutout")
     tesseract.SetImage(Image.fromarray(cutout))
     parsed_str = tesseract.GetUTF8Text().strip()
     return parsed_str
 
+
 def numeric_only(string):
     return re.sub("[^0-9]", "", string)
+
 
 def read_ultimate(tesseract, im, x_bounds, y_coord, height):
     parsed_str = numeric_only(read_string(tesseract, im, x_bounds, y_coord, height))
     if len(parsed_str) == 0:
         return (1, 0)
     points, limit = parsed_str[0], parsed_str[1]
-    return (int(points), int(limit))
+    try:
+        return (int(points), int(limit))
+    except:
+        print("Warning: ultimate status not readable.")
+        return (None, None)
 
 
 def read_integer(tesseract, im, x_bounds, y_coord, height):
     parsed_str = read_string(tesseract, im, x_bounds, y_coord, height)
-    return int(numeric_only(parsed_str))
+    try:
+        return int(numeric_only(parsed_str))
+    except:
+        print("Warning: integer value not readable")
+        return None
 
 
 def read_credits(tesseract, im, x_bounds, y_coord, height):
@@ -239,9 +251,20 @@ def read_credits(tesseract, im, x_bounds, y_coord, height):
     return int(numeric_only(parsed_str))
 
 
+def check_spike_status(im, coord, spike_icon, symbol_conf_threshold):
+    icon, mask = spike_icon
+    h, w, _ = icon.shape
+    sample = im[coord[1] : coord[1] + h, coord[0] : coord[0] + w, :]
+
+    result = cv2.matchTemplate(sample, icon, cv2.TM_CCOEFF_NORMED, mask=cv2.multiply(mask, 255)).item()
+    return result > symbol_conf_threshold
+
+
 def detect_scoreboard(
     im,
     agent_pictures,
+    spike_icon,
+    symbol_conf_threshold,
     entry_height,
     username_x,
     ultimate_x,
@@ -250,8 +273,13 @@ def detect_scoreboard(
     assists_x,
     credits_x,
 ):
-    usernames, ultimates, kills, deaths, assists, credits = ([] for _ in range(6))
-    with PyTessBaseAPI(path="./tessdata_fast", psm=PSM.SINGLE_LINE, oem=OEM.LSTM_ONLY) as tesseract:
+    h, w, _ = spike_icon[0].shape
+    usernames, ultimates, kills, deaths, assists, credits, spike_status = (
+        [] for _ in range(7)
+    )
+    with PyTessBaseAPI(
+        path="./tessdata_fast", psm=PSM.SINGLE_LINE, oem=OEM.LSTM_ONLY
+    ) as tesseract:
         for agent_picture in agent_pictures:
             tl, _ = agent_picture.image_rect
             _, y_coord = tl
@@ -269,4 +297,8 @@ def detect_scoreboard(
             credits.append(
                 read_credits(tesseract, im, credits_x, y_coord, entry_height)
             )
-    return usernames, ultimates, kills, deaths, assists, credits
+            spike_status.append(
+                check_spike_status(im, tl - [w, 1], spike_icon, symbol_conf_threshold)
+            )
+
+    return usernames, ultimates, kills, deaths, assists, credits, spike_status
