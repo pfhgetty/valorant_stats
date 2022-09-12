@@ -1,12 +1,12 @@
 import os
 import numpy as np
 import cv2
-
+from percep_hash import pHash
 
 def load_blue_red_icons(icon_directory, agent_image_size):
     blue_icons = load_icons(icon_directory, agent_image_size)
     red_icons = flip_icons(blue_icons)
-    return blue_icons, red_icons
+    return hash_icons(blue_icons), hash_icons(red_icons)
 
 
 def load_icons(icon_directory, agent_image_size):
@@ -33,9 +33,14 @@ def load_icons(icon_directory, agent_image_size):
                 icon_resized, icon_resized, mask=icon_mask_resized
             )
             icons[agent_name] = (icon_resized_masked, icon_mask_resized)
-
     return icons
 
+def hash_icons(icons):
+    hashed_icons = dict()
+    for agent_name, (icon, icon_mask) in icons.items():
+        hashed = pHash(icon)
+        hashed_icons[agent_name] = (hashed, icon, icon_mask)
+    return hashed_icons
 
 def flip_icons(icons):
     flipped_icons = dict()

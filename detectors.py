@@ -1,9 +1,58 @@
+import re
+from concurrent.futures import ThreadPoolExecutor
+from multiprocessing import cpu_count
+from itertools import repeat
 import cv2
 import numpy as np
-from agent import AgentPictureInfo
-from tesserocr import PyTessBaseAPI, PSM, OEM
 from PIL import Image
-import re
+from agent import AgentPictureInfo, ScoreboardInfo, ScoreboardPosition
+from percep_hash import pHash
+from nms import non_max_suppression_fast
+
+
+def find_all_agents(
+    im, icons, agent_image_size, agent_conf_threshold, x_bounds, y_bounds
+):
+    agents = []
+    for agent_name, (hashed, icon, mask) in icons.items():
+        confs = cv2.matchTemplate(
+            im, icon, cv2.TM_CCOEFF_NORMED, mask=cv2.multiply(mask, 255)
+        )
+        thresholded_confs = confs > agent_conf_threshold
+
+        # Select bounding boxes by confidences that exceed threshold
+        bbox_confs = confs[thresholded_confs]
+        (yCoords, xCoords) = (thresholded_confs).nonzero()
+        bboxes = []
+        for x, y in zip(xCoords, yCoords):
+            bboxes.append((x, y, x + agent_image_size[0], y + agent_image_size[1]))
+        bboxes = non_max_suppression_fast(bbox_confs, np.array(bboxes), 0.5)
+
+        teams = []
+        # Figure out what team each agent is in
+        for x1, y1, x2, y2 in bboxes:
+            agent_pic = im[y1:y2, x1:x2]
+            masked_agent_pic = agent_pic[cv2.multiply(mask, 255) < 254]
+            average_color = np.mean(masked_agent_pic, axis=0)
+            # (B + G) / 2 > R ?
+            if (average_color[0] + average_color[1]) / 2 > average_color[2]:
+                team = "blue"
+            else:
+                team = "red"
+            teams.append(team)
+
+        x_cut = x_bounds[0]
+        y_cut = y_bounds[0]
+        for conf, team, (x1, y1, x2, y2) in zip(bbox_confs, teams, bboxes):
+            agents.append(
+                AgentPictureInfo(
+                    agent_name,
+                    np.array([(x1 + x_cut, y1 + y_cut), (x2 + x_cut, y2 + y_cut)]),
+                    conf,
+                    team,
+                )
+            )
+    return agents
 
 
 def detect_all_agents(
@@ -43,12 +92,23 @@ def detect_all_agents(
     return agents
 
 
-def classify_agent(im, icons):
-    agents = dict()
-    for agent_name, (icon, mask) in icons.items():
-        result = cv2.matchTemplate(im, icon, cv2.TM_CCOEFF_NORMED, mask=cv2.multiply(mask, 255))
-        agents[agent_name] = result.flatten()
-    return agents
+def classify_agent(im, icons, agent_conf_threshold):
+    imhash = pHash(im)
+    for agent_name, (hashed, icon, mask) in icons.items():
+        dist = np.count_nonzero(imhash != hashed)
+        # print(dist)
+        # _, im_portion = pHash(im, debug=True)
+        # _, icon_portion = pHash(icon, debug=True)
+        # cv2.imshow("icon", icon_portion)
+        # cv2.imshow("im", im_portion)
+        # cv2.waitKey(0)
+        if dist < 40:
+            conf = cv2.matchTemplate(
+                im, icon, cv2.TM_CCOEFF_NORMED, mask=cv2.multiply(mask, 255)
+            ).item()
+            if conf > agent_conf_threshold:
+                return agent_name, conf
+    return None, None
 
 
 def detect_agents_on_team(
@@ -75,12 +135,11 @@ def detect_agents_on_team(
         # if DEBUG is not None:
         #     cv2.imshow("part", im_part)
         #     cv2.waitKey(0)
-        agent_confs = classify_agent(im_part, icons)
-
-        agent_name, conf = max(agent_confs.items(), key=lambda x: x[1])
-        if conf < agent_conf_threshold:
+        agent_name, conf = classify_agent(im_part, icons, agent_conf_threshold)
+        if agent_name is None:
             continue
-        agents.append(AgentPictureInfo(agent_name, (bl, tr), conf[0], team))
+
+        agents.append(AgentPictureInfo(agent_name, (bl, tr), conf, team))
 
     if DEBUG is not None:
         for image_agent_info in agents:
@@ -89,7 +148,7 @@ def detect_agents_on_team(
             conf = image_agent_info.conf
             detection = cv2.rectangle(im, bl, tr, DEBUG)
             cv2.imshow("detection" + str(conf), detection)
-            cv2.imshow(agent_name, icons[agent_name][0])
+            cv2.imshow(agent_name, icons[agent_name][1])
             cv2.waitKey(0)
             cv2.destroyWindow("detection" + str(conf))
             cv2.destroyWindow(agent_name)
@@ -97,7 +156,7 @@ def detect_agents_on_team(
 
 
 def get_contours_for_color(color_mse, DEBUG=False):
-    ret, threshed = cv2.threshold(color_mse, 90, 255, cv2.THRESH_BINARY_INV)
+    ret, threshed = cv2.threshold(color_mse, 50, 255, cv2.THRESH_BINARY_INV)
     threshed = threshed.astype(np.uint8)
     contours, hierarchy = cv2.findContours(
         threshed, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE
@@ -150,9 +209,9 @@ def detect_health_bar(
                     interpolation=cv2.INTER_LINEAR,
                 ),
             )
-
+        error = healthbar_im[None, :, :, :].astype(np.float32) - health_bar_colors[:, None, None, :].astype(np.float32)
         mse = np.sum(
-            (healthbar_im[None, :, :, :] - health_bar_colors[:, None, None, :]) ** 2,
+            abs(error),
             axis=-1,
             dtype=np.float32,
         )
@@ -176,45 +235,58 @@ def detect_health_bar(
     return agent_healths
 
 
-def dollar_contour_score(cnt):
-    x, y, w, h = cv2.boundingRect(cnt)
-    area = cv2.contourArea(cnt)
-    return area - x**2
+def dollar_contour_score(im):
+    im_h, im_w = im.shape
+    def score(cnt):
+        x, y, w, h = cv2.boundingRect(cnt)
+        area = cv2.contourArea(cnt)
+        s =(-x - abs((im_h/2 - (y+h/2)) ** 2)) + (area<10*-50)+ (h<3*-50)
+        # print(x, im_h, s)
+        return s
+    return score
 
 
 def read_string(tesseract, im, x_bounds, y_coord, height, filter_dollar=False) -> str:
     cutout = im[y_coord : y_coord + height, x_bounds[0] : x_bounds[1], :]
     cutout = cutout / 255.0
+    cutout = cv2.GaussianBlur(cutout, (0, 0), 0.5)
+
     cutout = cutout[:, :, 0] * cutout[:, :, 1] * cutout[:, :, 2]
-    cutout /= np.max(cutout)
+    cutout_max = np.max(cutout)
+    if cutout_max > 0:
+        cutout /= cutout_max
     cutout = (cutout * 255.0).astype(np.uint8)
-    cutout = cv2.GaussianBlur(cutout, (0,0), 0.5)
     if filter_dollar:
         # Filter out the valorant dollar sign so it's not read by tesseract
         edges = cv2.Canny(cutout, 100, 200)
         edges = cv2.dilate(cutout, (3, 3), iterations=2)
 
-        edges = cv2.adaptiveThreshold(
-            edges, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 9, -10
-        )
+        _, edges = cv2.threshold(edges, thresh=0, maxval=255, type=cv2.THRESH_OTSU)
         cntrs, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         contour_image = cv2.drawContours(
             cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR), cntrs, -1, (0, 255, 0), 1
         )
-        # cv2.imshow("contours", contour_image)
-        # cv2.imshow("edges", edges)
-        # cv2.waitKey(0)
-        # cv2.destroyWindow("contours")
-        # cv2.destroyWindow("edges")
+
         if len(cntrs) > 0:
             # get best contour
-            cnt = max(cntrs, key=dollar_contour_score)
+            cnt = max(cntrs, key=dollar_contour_score(cutout))
             x, y, w, h = cv2.boundingRect(cnt)
-            cutout = cv2.rectangle(cutout, (x, y), (x + w, y + h), (0, 0, 0), -1)
+            cutout = cv2.rectangle(
+                cutout, (x - 1, y - 1), (x + w + 1, y + h + 1), np.median(cutout), -1
+            )
+        # cv2.namedWindow('contours', cv2.WINDOW_GUI_EXPANDED)
+        # cv2.namedWindow('edges', cv2.WINDOW_GUI_EXPANDED)
+        # cv2.namedWindow('cutout', cv2.WINDOW_NORMAL)
+        # cv2.imshow("contours", contour_image)
+        # cv2.imshow("edges", edges)
+        # cv2.imshow("cutout", cutout)
+        # cv2.waitKey(0)
+        # cv2.destroyAllWindows()
     cutout = 255 - cutout
-    # cv2.imshow("cutout", cutout)
-    # cv2.waitKey(0)
-    tesseract.SetImage(Image.fromarray(cutout))
+    # _, cutout = cv2.threshold(cutout, thresh=100, maxval=255, type=cv2.THRESH_BINARY)
+
+    h, w = cutout.shape
+    tesseract.SetImageBytes(cutout.tobytes(), w, h, 1, w)
     parsed_str = tesseract.GetUTF8Text().strip()
     return parsed_str
 
@@ -224,10 +296,10 @@ def numeric_only(string):
 
 
 def read_ultimate(tesseract, im, x_bounds, y_coord, height):
-    parsed_str = numeric_only(read_string(tesseract, im, x_bounds, y_coord, height))
-    if len(parsed_str) == 0:
+    parsed_str = read_string(tesseract, im, x_bounds, y_coord, height)
+    if len(parsed_str) != 3:
         return (1, 0)
-    points, limit = parsed_str[0], parsed_str[1]
+    points, limit = parsed_str[0], parsed_str[2]
     try:
         return (int(points), int(limit))
     except:
@@ -248,7 +320,11 @@ def read_credits(tesseract, im, x_bounds, y_coord, height):
     parsed_str = read_string(
         tesseract, im, x_bounds, y_coord, height, filter_dollar=True
     )
-    return int(numeric_only(parsed_str))
+    try:
+        return int(numeric_only(parsed_str))
+    except:
+        print("Warning: Credits not readable")
+        return None
 
 
 def check_spike_status(im, coord, spike_icon, symbol_conf_threshold):
@@ -256,12 +332,43 @@ def check_spike_status(im, coord, spike_icon, symbol_conf_threshold):
     h, w, _ = icon.shape
     sample = im[coord[1] : coord[1] + h, coord[0] : coord[0] + w, :]
 
-    result = cv2.matchTemplate(sample, icon, cv2.TM_CCOEFF_NORMED, mask=cv2.multiply(mask, 255)).item()
+    result = cv2.matchTemplate(
+        sample, icon, cv2.TM_CCOEFF_NORMED, mask=cv2.multiply(mask, 255)
+    ).item()
     return result > symbol_conf_threshold
+
+
+def scoreboard_row(args):
+    (
+        im,
+        spike_icon,
+        symbol_conf_threshold,
+        tesseract_queue,
+        positions,
+        entry_height,
+    ) = args
+    y_coord = positions.y_coord
+    tesseract = tesseract_queue.get()
+    username = read_string(tesseract, im, positions.username_x, y_coord, entry_height)
+    ultimate = read_ultimate(tesseract, im, positions.ultimate_x, y_coord, entry_height)
+
+    kills = read_integer(tesseract, im, positions.kills_x, y_coord, entry_height)
+    deaths = read_integer(tesseract, im, positions.deaths_x, y_coord, entry_height)
+    assists = read_integer(tesseract, im, positions.assists_x, y_coord, entry_height)
+    credits = read_credits(tesseract, im, positions.credits_x, y_coord, entry_height)
+    tesseract_queue.put(tesseract)
+    spike_status = check_spike_status(
+        im, positions.spike_pos, spike_icon, symbol_conf_threshold
+    )
+
+    return ScoreboardInfo(
+        username, ultimate, kills, deaths, assists, credits, spike_status
+    )
 
 
 def detect_scoreboard(
     im,
+    tesseract,
     agent_pictures,
     spike_icon,
     symbol_conf_threshold,
@@ -274,31 +381,33 @@ def detect_scoreboard(
     credits_x,
 ):
     h, w, _ = spike_icon[0].shape
-    usernames, ultimates, kills, deaths, assists, credits, spike_status = (
-        [] for _ in range(7)
-    )
-    with PyTessBaseAPI(
-        path="./tessdata_fast", psm=PSM.SINGLE_LINE, oem=OEM.LSTM_ONLY
-    ) as tesseract:
-        for agent_picture in agent_pictures:
-            tl, _ = agent_picture.image_rect
-            _, y_coord = tl
-            usernames.append(
-                read_string(tesseract, im, username_x, y_coord, entry_height)
-            )
-            ultimates.append(
-                read_ultimate(tesseract, im, ultimate_x, y_coord, entry_height)
-            )
-            kills.append(read_integer(tesseract, im, kills_x, y_coord, entry_height))
-            deaths.append(read_integer(tesseract, im, deaths_x, y_coord, entry_height))
-            assists.append(
-                read_integer(tesseract, im, assists_x, y_coord, entry_height)
-            )
-            credits.append(
-                read_credits(tesseract, im, credits_x, y_coord, entry_height)
-            )
-            spike_status.append(
-                check_spike_status(im, tl - [w, 1], spike_icon, symbol_conf_threshold)
-            )
+    scoreboard_positions = []
 
-    return usernames, ultimates, kills, deaths, assists, credits, spike_status
+    for agent_picture in agent_pictures:
+        tl, _ = agent_picture.image_rect
+        _, y_coord = tl
+        scoreboard_positions.append(
+            ScoreboardPosition(
+                username_x,
+                ultimate_x,
+                kills_x,
+                deaths_x,
+                assists_x,
+                credits_x,
+                tl - [w, 1],
+                y_coord,
+            )
+        )
+    args = list(
+        zip(
+            repeat(im),
+            repeat(spike_icon),
+            repeat(symbol_conf_threshold),
+            repeat(tesseract),
+            scoreboard_positions,
+            repeat(entry_height),
+        )
+    )
+    with ThreadPoolExecutor(max_workers=cpu_count()) as executor:
+        scoreboard_infos = executor.map(scoreboard_row, args)
+    return scoreboard_infos
