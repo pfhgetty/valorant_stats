@@ -14,7 +14,7 @@ import _thread
 TOP_HUD_HEIGHT = 150
 
 
-def read_from_image_path(image_path, icon_directory, symbol_directory):
+def read_from_image_path(image_path, icon_directory, symbol_directory, save_debug=False):
     im = cv2.imread(image_path)
     # cv2.imshow("image", im)
     # cv2.waitKey(0)
@@ -50,11 +50,13 @@ def read_from_image_path(image_path, icon_directory, symbol_directory):
     end_time = time.time()
     print(f"time: {end_time - start_time} sec")
     print(matched_pictures.values())
-    im = helpers.get_debug_image(
+    debug_im = helpers.get_debug_image(
         im, matched_pictures.keys(), matched_pictures.values()
     )
-    cv2.imshow("im", im)
+    cv2.imshow("im", debug_im)
     cv2.waitKey(0)
+    if save_debug:
+        cv2.imwrite(save_debug, debug_im)
     return matched_pictures.values()
 
 

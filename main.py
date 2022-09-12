@@ -27,4 +27,4 @@ if __name__ == "__main__":
         monitor_num=monitor,
     )
 
-    # routines.read_from_image_path("./sample_images/test6.png", icon_directory, symbols_directory)
+    # routines.read_from_image_path("./sample_images/test (3).jpg", icon_directory, symbols_directory, "demo/demo4.png")
