@@ -193,3 +193,4 @@ cython_debug/
 
 sample_images/
 profiling.txt
+out.txt

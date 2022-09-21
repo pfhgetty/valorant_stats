@@ -14,7 +14,9 @@ import _thread
 TOP_HUD_HEIGHT = 150
 
 
-def read_from_image_path(image_path, icon_directory, symbol_directory, save_debug=False):
+def read_from_image_path(
+    image_path, icon_directory, symbol_directory, save_debug=False
+):
     im = cv2.imread(image_path)
     # cv2.imshow("image", im)
     # cv2.waitKey(0)
@@ -58,14 +60,6 @@ def read_from_image_path(image_path, icon_directory, symbol_directory, save_debu
     if save_debug:
         cv2.imwrite(save_debug, debug_im)
     return matched_pictures.values()
-
-
-def input_thread(stop_signal, stop_char):
-    while True:
-        c = getch().decode().lower()
-        if c == stop_char:
-            stop_signal.append(True)
-            break
 
 
 class GetPositionInfo:
@@ -132,11 +126,22 @@ class LiveUpdate:
         )
 
 
-def read_from_screen_capture(icon_directory, symbol_directory, monitor_num):
+def input_thread(stop_signal, stop_char):
+    while True:
+        c = getch().decode().lower()
+        if c == stop_char:
+            stop_signal.append(True)
+            break
+
+
+def read_from_screen_capture(
+    icon_directory, symbol_directory, monitor_num, out_txt_file, video_debug
+):
     print("Press the 'S' key to stop")
-    #
+    # Listen for stop key on another thread
     stop_signal = []
     _thread.start_new_thread(input_thread, (stop_signal, "s"))
+
 
     tesseract = Queue()
     for t in [
@@ -151,15 +156,23 @@ def read_from_screen_capture(icon_directory, symbol_directory, monitor_num):
     updater = LiveUpdate(
         blue_icons, red_icons, scoreboard_icons, symbol_icons, tesseract
     )
-    writer = cv2.VideoWriter(
-        "debug.avi",
-        cv2.VideoWriter_fourcc(*"MJPG"),
-        10,
-        (
-            1920,
-            1080,
-        ),
-    )
+
+
+    # Write debug video
+    writer = None
+    if video_debug:
+        writer = cv2.VideoWriter(
+            video_debug,
+            cv2.VideoWriter_fourcc(*"MJPG"),
+            10,
+            (
+                1920,
+                1080,
+            ),
+        )
+    
+    # Write out to text file
+    f = open(out_txt_file, mode="w")
     with mss() as capture:
         monitor = capture.monitors[monitor_num]
         print("Capturing agents in top HUD...")
@@ -167,7 +180,8 @@ def read_from_screen_capture(icon_directory, symbol_directory, monitor_num):
         while (l1 < 1 or l2 < 1) and not stop_signal:
             im = np.ascontiguousarray(capture.grab(monitor))[:, :, :3]
             l1, l2 = updater.update_positions(im)
-            writer.write(im)
+            if writer:
+                writer.write(im)
         if not stop_signal:
             print("Starting live update...")
             while not stop_signal:
@@ -178,5 +192,11 @@ def read_from_screen_capture(icon_directory, symbol_directory, monitor_num):
                     matched_pictures.keys(),
                     matched_pictures.values(),
                 )
-                writer.write(debug_im)
-    writer.release()
+                if writer:
+                    writer.write(debug_im)
+                f.seek(0)
+                f.write(str(matched_pictures))
+                f.truncate()
+    if writer:
+        writer.release()
+    f.close()
