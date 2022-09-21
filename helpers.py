@@ -1,7 +1,7 @@
 from re import A
 import numpy as np
 import cv2
-from agent import AgentPictureInfo, PlayerInfo
+from agent import AgentPictureInfo, PlayerInfo, PlayerInfoAndImages
 import detectors
 import loader
 
@@ -61,17 +61,17 @@ def outlined_text(im, text, position, color):
 
 def get_debug_image(
     im,
-    top_hud_and_scoreboard_pictures: list[tuple[AgentPictureInfo, AgentPictureInfo]],
-    player_infos: list[PlayerInfo],
+    player_info_and_images: list[PlayerInfoAndImages]
 ):
     im = np.ascontiguousarray(im)
     health_offset = np.array([0, 65])
     scoreboard_y_text_offset = np.array([0, 10])
     scoreboard_text_offset = np.array([125, 0])
     colors_for_team = {"red": (0, 0, 255), "blue": (255, 0, 0)}
-    for (top_hud_picture, scoreboard_picture), player_info in zip(
-        top_hud_and_scoreboard_pictures, player_infos
-    ):
+    for info in player_info_and_images:
+        top_hud_picture = info.top_hud_picture
+        scoreboard_picture = info.scoreboard_picture
+        player_info = info.player
         color = colors_for_team[player_info.team]
         if top_hud_picture is not None:
             # TOP HUD INFORMATION
@@ -294,7 +294,7 @@ def match_scoreboard_and_top_hud_data(
             agent_picture_scoreboard.team,
             agent_healths.pop(match_index),
         )
-    return matched_pictures
+    return matched_pictures_formatted(matched_pictures)
 
 
 def create_tesseract():
@@ -303,3 +303,9 @@ def create_tesseract():
     )
     tesseract.SetVariable("tessedit_do_invert", "0")
     return tesseract
+
+def matched_pictures_formatted(matched_pictures):
+    out = []
+    for (top_hud_picture, scoreboard_picture), player_info in matched_pictures.items():
+        out.append(PlayerInfoAndImages(top_hud_picture, scoreboard_picture, player_info))
+    return out

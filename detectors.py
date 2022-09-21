@@ -298,7 +298,7 @@ def numeric_only(string):
 def read_ultimate(tesseract, im, x_bounds, y_coord, height):
     parsed_str = read_string(tesseract, im, x_bounds, y_coord, height)
     if len(parsed_str) != 3:
-        return (1, 0)
+        return "READY"
     points, limit = parsed_str[0], parsed_str[2]
     try:
         return (int(points), int(limit))

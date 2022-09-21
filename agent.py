@@ -57,3 +57,9 @@ class PlayerInfo:
     agent_name: str
     team: str
     health: int
+
+@dataclass(frozen=True)
+class PlayerInfoAndImages:
+    top_hud_picture: AgentPictureInfo
+    scoreboard_picture: AgentPictureInfo
+    player: PlayerInfo

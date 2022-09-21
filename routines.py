@@ -10,9 +10,22 @@ import helpers
 import numpy as np
 from getch import getch
 import _thread
+import json
+import dataclasses
 
 TOP_HUD_HEIGHT = 150
 
+class EnhancedJSONEncoder(json.JSONEncoder):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+    def default(self, o):
+        if dataclasses.is_dataclass(o):
+            return dataclasses.asdict(o)
+        if isinstance(o, np.ndarray):
+            return o.tolist()
+        elif isinstance(o, np.generic):
+            return str(o)
+        return super().default(o)
 
 def read_from_image_path(
     image_path, icon_directory, symbol_directory, save_debug=False
@@ -51,15 +64,15 @@ def read_from_image_path(
 
     end_time = time.time()
     print(f"time: {end_time - start_time} sec")
-    print(matched_pictures.values())
+    print(matched_pictures)
     debug_im = helpers.get_debug_image(
-        im, matched_pictures.keys(), matched_pictures.values()
+        im, matched_pictures
     )
     cv2.imshow("im", debug_im)
     cv2.waitKey(0)
     if save_debug:
         cv2.imwrite(save_debug, debug_im)
-    return matched_pictures.values()
+    return matched_pictures
 
 
 class GetPositionInfo:
@@ -189,13 +202,12 @@ def read_from_screen_capture(
                 matched_pictures = updater.update(im)
                 debug_im = helpers.get_debug_image(
                     im,
-                    matched_pictures.keys(),
-                    matched_pictures.values(),
+                    matched_pictures
                 )
                 if writer:
                     writer.write(debug_im)
                 f.seek(0)
-                f.write(str(matched_pictures))
+                f.write(json.dumps(matched_pictures, cls=EnhancedJSONEncoder))
                 f.truncate()
     if writer:
         writer.release()
