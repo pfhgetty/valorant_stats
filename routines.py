@@ -12,12 +12,15 @@ from getch import getch
 import _thread
 import json
 import dataclasses
+from pynput.keyboard import Key, Controller
 
 TOP_HUD_HEIGHT = 150
+
 
 class EnhancedJSONEncoder(json.JSONEncoder):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+
     def default(self, o):
         if dataclasses.is_dataclass(o):
             return dataclasses.asdict(o)
@@ -26,6 +29,7 @@ class EnhancedJSONEncoder(json.JSONEncoder):
         elif isinstance(o, np.generic):
             return str(o)
         return super().default(o)
+
 
 def read_from_image_path(
     image_path, icon_directory, symbol_directory, save_debug=False
@@ -49,11 +53,15 @@ def read_from_image_path(
         top_hud, blue_icons, red_icons
     )
     scoreboard_agent_pictures = helpers.get_scoreboard_positions(im, scoreboard_icons)
-
+    new_scoreboard_agent_pictures = helpers.update_scoreboard_agent_pictures(
+        im, scoreboard_icons, scoreboard_agent_pictures
+    )
+    if len(new_scoreboard_agent_pictures) == len(scoreboard_agent_pictures):
+        scoreboard_agent_pictures = new_scoreboard_agent_pictures
     start_time = time.time()
     agent_healths = helpers.get_healths(top_hud, top_hud_agent_pictures)
     scoreboard_infos = helpers.scoreboard_detectors(
-        im, tesseract, scoreboard_agent_pictures, symbol_icons["Spike"]
+        im, tesseract, scoreboard_agent_pictures, symbol_icons["Spike"], symbol_icons["Chickens"]
     )
     matched_pictures = helpers.match_scoreboard_and_top_hud_data(
         scoreboard_agent_pictures,
@@ -64,10 +72,8 @@ def read_from_image_path(
 
     end_time = time.time()
     print(f"time: {end_time - start_time} sec")
-    print(matched_pictures)
-    debug_im = helpers.get_debug_image(
-        im, matched_pictures
-    )
+    print(json.dumps(matched_pictures, cls=EnhancedJSONEncoder))
+    debug_im = helpers.get_debug_image(im, matched_pictures)
     cv2.imshow("im", debug_im)
     cv2.waitKey(0)
     if save_debug:
@@ -104,7 +110,7 @@ class LiveUpdate:
         self.symbol_icons = symbol_icons
         self.tesseract = tesseract
 
-    def update_positions(
+    def setup_positions(
         self,
         im,
     ):
@@ -123,11 +129,17 @@ class LiveUpdate:
         top_hud = im[:TOP_HUD_HEIGHT, :, :]
         agent_healths = helpers.get_healths(top_hud, self.top_hud_agent_pictures)
 
+        new_scoreboard_agent_pictures = helpers.update_scoreboard_agent_pictures(
+            im, self.scoreboard_icons, self.scoreboard_agent_pictures
+        )
+        if len(new_scoreboard_agent_pictures) == len(self.scoreboard_agent_pictures):
+            self.scoreboard_agent_pictures = new_scoreboard_agent_pictures
         scoreboard_infos = helpers.scoreboard_detectors(
             im,
             self.tesseract,
             self.scoreboard_agent_pictures,
             self.symbol_icons["Spike"],
+            self.symbol_icons["Chickens"]
         )
         self.agent_healths = agent_healths
         self.scoreboard_infos = scoreboard_infos
@@ -155,7 +167,6 @@ def read_from_screen_capture(
     stop_signal = []
     _thread.start_new_thread(input_thread, (stop_signal, "s"))
 
-
     tesseract = Queue()
     for t in [
         helpers.create_tesseract()
@@ -170,7 +181,6 @@ def read_from_screen_capture(
         blue_icons, red_icons, scoreboard_icons, symbol_icons, tesseract
     )
 
-
     # Write debug video
     writer = None
     if video_debug:
@@ -183,7 +193,8 @@ def read_from_screen_capture(
                 1080,
             ),
         )
-    
+    test_out_period = 20
+    keyboard = Controller()
     # Write out to text file
     f = open(out_txt_file, mode="w")
     with mss() as capture:
@@ -191,24 +202,32 @@ def read_from_screen_capture(
         print("Capturing agents in top HUD...")
         l1 = l2 = 0
         while (l1 < 1 or l2 < 1) and not stop_signal:
+            keyboard.press(Key.scroll_lock)
             im = np.ascontiguousarray(capture.grab(monitor))[:, :, :3]
-            l1, l2 = updater.update_positions(im)
+            l1, l2 = updater.setup_positions(im)
             if writer:
                 writer.write(im)
         if not stop_signal:
             print("Starting live update...")
+            i = 0
             while not stop_signal:
+                keyboard.press(Key.scroll_lock)
                 im = np.ascontiguousarray(capture.grab(monitor))[:, :, :3]
                 matched_pictures = updater.update(im)
-                debug_im = helpers.get_debug_image(
-                    im,
-                    matched_pictures
-                )
+                debug_im = helpers.get_debug_image(im, matched_pictures)
                 if writer:
                     writer.write(debug_im)
                 f.seek(0)
                 f.write(json.dumps(matched_pictures, cls=EnhancedJSONEncoder))
                 f.truncate()
+
+                i += 1
+                if i % test_out_period == 0:
+                    f_test = open(f"test/test_{i}.txt", mode="w")
+                    f_test.write(json.dumps(matched_pictures, cls=EnhancedJSONEncoder))
+                    f_test.close()
+                    cv2.imwrite(f"test/test_{i}.png", im)
+    keyboard.release(Key.scroll_lock)
     if writer:
         writer.release()
     f.close()

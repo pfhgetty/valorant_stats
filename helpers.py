@@ -1,4 +1,5 @@
 from re import A
+from turtle import position
 import numpy as np
 import cv2
 from agent import AgentPictureInfo, PlayerInfo, PlayerInfoAndImages
@@ -9,8 +10,9 @@ from tesserocr import PyTessBaseAPI, PSM, OEM
 
 # TOP HUD CONSTANTS
 # Detection Confidence Threshold for Agents
-AGENT_CONF_THRESHOLD = 0.8
-FIRST_BLUE_AGENT_POS = np.array([710, 30])
+AGENT_CONF_THRESHOLD = 0.5
+AGENT_SQDIFF_THRESHOLD = 0.15
+FIRST_LEFT_AGENT_POS = np.array([710, 30])
 AGENT_SPACING = np.array([66, 0])
 HEALTH_BAR_Y = 76
 HEALTH_BAR_WIDTH_HEIGHT = np.array([40, 6])
@@ -20,7 +22,7 @@ AGENT_IMAGE_SIZE = np.array([40, 40])
 HEALTH_BAR_COLORS = np.array([[250, 250, 250], [91, 96, 241]], dtype=np.uint8)
 
 # SCOREBOARD CONSTANTS
-SCOREBOARD_X_BOUNDS = np.array([505, 623])
+SCOREBOARD_X_BOUNDS = np.array([570, 572+38])
 SCOREBOARD_Y_BOUNDS = np.array([186, 875])
 SCOREBOARD_AGENT_IMAGE_SIZE = np.array([33, 33])
 SCOREBOARD_AGENT_SPACING = np.array([0, 34])
@@ -148,27 +150,29 @@ def get_debug_image(
 
 def load_icons(icon_directory, symbol_directory):
     # Use hashes for agent icons in order to speed up matching
-    blue_icons, red_icons = loader.load_blue_red_icons(icon_directory, AGENT_IMAGE_SIZE)
+    left_icons, right_icons = loader.load_left_right_icons(icon_directory, AGENT_IMAGE_SIZE)
     scoreboard_icons = loader.hash_icons(
         loader.load_icons(icon_directory, SCOREBOARD_AGENT_IMAGE_SIZE)
     )
 
-    symbol_icons = loader.load_icons(symbol_directory, SYMBOL_IMAGE_SIZE)
-    return blue_icons, red_icons, scoreboard_icons, symbol_icons
+    spike_icon = loader.load_icons(symbol_directory + "/Spike_icon.png", SYMBOL_IMAGE_SIZE)["Spike"]
+    chicken_icon = loader.load_icons(symbol_directory + "/Chickens_text.png", None)["Chickens"]
+    symbol_icons = {"Spike" : spike_icon, "Chickens": chicken_icon}
+    return left_icons, right_icons, scoreboard_icons, symbol_icons
 
 
-def get_top_hud_positions(top_hud, blue_icons, red_icons):
+def get_top_hud_positions(top_hud, left_icons, right_icons):
     _, w, _ = top_hud.shape
-    FIRST_RED_AGENT_POS = (
-        w - FIRST_BLUE_AGENT_POS[0] - AGENT_IMAGE_SIZE[0] + 1,
-        FIRST_BLUE_AGENT_POS[1],
+    FIRST_RIGHT_AGENT_POS = (
+        w - FIRST_LEFT_AGENT_POS[0] - AGENT_IMAGE_SIZE[0] + 1,
+        FIRST_LEFT_AGENT_POS[1],
     )
     image_agent_infos = detectors.detect_all_agents(
         top_hud,
-        blue_icons,
-        red_icons,
-        FIRST_BLUE_AGENT_POS,
-        FIRST_RED_AGENT_POS,
+        left_icons,
+        right_icons,
+        FIRST_LEFT_AGENT_POS,
+        FIRST_RIGHT_AGENT_POS,
         -AGENT_SPACING,
         AGENT_SPACING,
         AGENT_IMAGE_SIZE,
@@ -201,9 +205,23 @@ def get_scoreboard_positions(im, icons):
         scoreboard,
         icons,
         SCOREBOARD_AGENT_IMAGE_SIZE,
-        AGENT_CONF_THRESHOLD,
+        AGENT_SQDIFF_THRESHOLD,
         SCOREBOARD_X_BOUNDS,
         SCOREBOARD_Y_BOUNDS,
+    )
+    return agent_pictures
+
+def update_scoreboard_agent_pictures(im, icons, past_agent_pictures: list[AgentPictureInfo]):
+    positions = []
+    for agent_picture in past_agent_pictures:
+        positions.append(agent_picture.image_rect)
+
+    agent_pictures = detectors.detect_agent_at_positions_on_team(
+        im,
+        icons,
+        positions,
+        0.25,
+        past_agent_pictures,
     )
     return agent_pictures
 
@@ -224,12 +242,13 @@ def get_scoreboard_positions_static(im, icons):
     return agent_pictures
 
 
-def scoreboard_detectors(im, tesseract, agent_pictures, spike_icon):
+def scoreboard_detectors(im, tesseract, agent_pictures, spike_icon, chickens):
     return detectors.detect_scoreboard(
         im,
         tesseract,
         agent_pictures,
         spike_icon,
+        chickens,
         SYMBOL_CONF_THRESHOLD,
         SCOREBOARD_ENTRY_HEIGHT,
         USERNAME_X_BOUNDS,
@@ -299,7 +318,7 @@ def match_scoreboard_and_top_hud_data(
 
 def create_tesseract():
     tesseract = PyTessBaseAPI(
-        path="./tessdata", psm=PSM.SINGLE_LINE, oem=OEM.DEFAULT
+        lang='eng', path="./tessdata", psm=PSM.SINGLE_LINE, oem=OEM.DEFAULT
     )
     tesseract.SetVariable("tessedit_do_invert", "0")
     return tesseract

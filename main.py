@@ -41,4 +41,4 @@ if __name__ == "__main__":
         video_debug=video_debug,
     )
 
-    # routines.read_from_image_path("./sample_images/test (3).jpg", icon_directory, symbols_directory, "demo/demo4.png")
+    # routines.read_from_image_path("./test/test_520.png", icon_directory, symbols_directory, "demo/demo4.png")
